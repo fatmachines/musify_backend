@@ -1,0 +1,4 @@
+# Caddy gets and renews the HTTPS certificate by itself.
+musify.example.com {
+	reverse_proxy 127.0.0.1:8790
+}

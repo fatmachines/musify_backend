@@ -1,0 +1,17 @@
+services:
+  musify-api:
+    build: .
+    container_name: musify-api
+    restart: unless-stopped
+    # MUSIFY_KEY (required): the key the app sends. See .env.example.
+    env_file: .env
+    volumes:
+      - musify_cache:/cache
+    # Only on this machine: put a reverse proxy with HTTPS in front (see
+    # README). To share another compose project's network instead, add a
+    # docker-compose.override.yml.
+    ports:
+      - "127.0.0.1:8790:8790"
+
+volumes:
+  musify_cache:
