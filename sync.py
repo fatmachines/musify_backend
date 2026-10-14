@@ -12,8 +12,10 @@ device reads it, merges in its own changes and writes it back with the
 revision it read; if someone wrote in between, it gets a 409 with the
 latest and merges again.
 
-Music files are stored once by their SHA-1 ("blobs") and listed per group
-by their path inside the synced folder.
+Music files are listed per group by their path inside the synced folder and
+SHA-1. Each device says which songs it holds; a song is uploaded (stored once
+by its SHA-1, a "blob") only when another device lacks it, and downloaded
+from there.
 """
 
 import hashlib
@@ -65,6 +67,8 @@ def db():
             CREATE TABLE IF NOT EXISTS state (
                 code TEXT, kind TEXT, rev INTEGER, data TEXT, updated REAL,
                 device TEXT, PRIMARY KEY (code, kind));
+            CREATE TABLE IF NOT EXISTS holdings (
+                device TEXT PRIMARY KEY, sha1s TEXT, updated REAL);
             CREATE TABLE IF NOT EXISTS files (
                 code TEXT, path TEXT, sha1 TEXT, size INTEGER, added REAL,
                 device TEXT, deleted INTEGER DEFAULT 0,
@@ -284,13 +288,91 @@ def put_state(device, kind, body):
 # Music files -------------------------------------------------------------------
 
 
-def files(device):
+def set_holdings(device, body):
+    """Which songs (SHA-1s) this device has in its synced folder: songs every
+    device has never need uploading."""
+    sha1s = sorted({str(h).lower() for h in (body.get("sha1s") or [])})
     with _db_lock:
-        rows = db().execute(
+        conn = db()
+        conn.execute(
+            "INSERT OR REPLACE INTO holdings VALUES (?, ?, ?)",
+            (device["id"], json.dumps(sha1s), time.time()),
+        )
+        conn.commit()
+        _collect_blobs(conn)
+    return {"ok": True}
+
+
+def _collect_blobs(conn):
+    """Deletes songs the server no longer needs: once every device of
+    every group listing a song holds it (a device that hasn't said what it
+    holds counts as still needing it), or no one lists it any more. The
+    server only keeps songs on their way to a device."""
+    holdings = {
+        r["device"]: set(json.loads(r["sha1s"]))
+        for r in conn.execute("SELECT device, sha1s FROM holdings")
+    }
+    members = {}
+    for r in conn.execute("SELECT id, code FROM devices"):
+        members.setdefault(r["code"], []).append(r["id"])
+    listed = {}
+    for r in conn.execute("SELECT DISTINCT code, sha1 FROM files WHERE deleted = 0"):
+        listed.setdefault(r["sha1"], set()).add(r["code"])
+    removed = 0
+    for blob in BLOBS.iterdir():
+        if "." in blob.name:
+            continue  # an upload in progress
+        groups = listed.get(blob.name, set())
+        needed = any(
+            blob.name not in holdings.get(device, ())
+            for code in groups
+            for device in members.get(code, [])
+        )
+        if not needed:
+            blob.unlink(missing_ok=True)
+            removed += 1
+    if removed:
+        print(time.strftime("%H:%M:%S"), "sync: deleted", removed,
+              "songs every device has", flush=True)
+
+
+def files(device):
+    """The group's songs, each with whether its contents are on the server
+    ("available", to download), and "wanted": the songs this device should
+    upload, because another device that has said what it holds lacks them
+    and the server doesn't have them yet."""
+    with _db_lock:
+        conn = db()
+        rows = conn.execute(
             "SELECT path, sha1, size, added, device, deleted FROM files WHERE code = ?",
             (device["code"],),
         ).fetchall()
-    return {"files": [dict(r) | {"deleted": bool(r["deleted"])} for r in rows]}
+        members = [
+            r["id"]
+            for r in conn.execute(
+                "SELECT id FROM devices WHERE code = ?", (device["code"],)
+            )
+        ]
+        held = {
+            r["device"]: set(json.loads(r["sha1s"]))
+            for r in conn.execute(
+                "SELECT device, sha1s FROM holdings WHERE device IN (%s)"
+                % ",".join("?" * len(members)),
+                members,
+            )
+        } if members else {}
+    mine = held.get(device["id"], set())
+    wanted = set()
+    listed = []
+    for r in rows:
+        available = (BLOBS / r["sha1"]).exists()
+        listed.append(dict(r) | {"deleted": bool(r["deleted"]), "available": available})
+        if r["deleted"] or available or r["sha1"] not in mine:
+            continue
+        # Someone who has said what they hold doesn't have it.
+        if any(r["sha1"] not in theirs for d, theirs in held.items() if d != device["id"]):
+            wanted.add(r["sha1"])
+    return {"files": listed, "wanted": sorted(wanted)}
 
 
 def _safe_path(path):
@@ -309,8 +391,8 @@ def change_files(device, body):
         for item in body.get("add") or []:
             path = _safe_path(item.get("path"))
             sha1 = str(item.get("sha1") or "").lower()
-            if not (len(sha1) == 40 and (BLOBS / sha1).exists()):
-                raise SyncError(400, f"upload {path} first")
+            if len(sha1) != 40:
+                raise SyncError(400, f"bad sha1 for {path}")
             conn.execute(
                 "INSERT OR REPLACE INTO files VALUES (?, ?, ?, ?, ?, ?, 0)",
                 (device["code"], path, sha1, int(item.get("size") or 0), now, device["id"]),

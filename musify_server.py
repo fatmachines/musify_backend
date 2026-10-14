@@ -438,6 +438,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json(
                         200, sync.change_files(device, self._body())
                     )
+            if method == "POST" and parts == ["have"]:
+                return self._send_json(200, sync.set_holdings(device, self._body()))
             if method == "POST" and parts == ["blobs", "missing"]:
                 return self._send_json(200, sync.missing_blobs(self._body()))
             if len(parts) == 2 and parts[0] == "blobs":

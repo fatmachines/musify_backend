@@ -51,12 +51,18 @@ approves it. Each device then has its own token (`X-Musify-Sync`).
 | `POST /sync/requests/<id>` `{approve}` | Let a device in, or not |
 | `DELETE /sync/devices/<id>` | Take a device out (itself, to leave) |
 | `GET`/`PUT /sync/state/<library\|playback>` | Shared JSON with a revision; a `PUT` with an old `rev` gets `409` and the latest |
-| `GET`/`POST /sync/files` | The synced folder's files: `{add: [{path, sha1, size}], delete: [path]}` |
+| `GET`/`POST /sync/files` | The synced folder's files: `{add: [{path, sha1, size}], delete: [path]}`; a `GET` also says which are `available` to download and which this device should upload (`wanted`) |
+| `POST /sync/have` `{sha1s}` | The songs this device holds: songs every device has are never uploaded |
 | `GET`/`PUT /sync/blobs/<sha1>` | A file's contents, stored once by SHA-1 |
 | `POST /sync/blobs/missing` `{sha1s}` | Which of them still need uploading |
 
+Music files don't live on the server: devices list their songs by path and
+fingerprint (SHA-1) and say which they hold, so songs every device already
+has never move. Only a song another device lacks is uploaded, kept just until
+every device has it, then deleted.
+
 Sync data lives in the `musify_data` volume (`/data`): an SQLite database
-and the files. Songs up to 300 MB each (`MUSIFY_MAX_SONG_MB`).
+and songs on their way. Songs up to 300 MB each (`MUSIFY_MAX_SONG_MB`).
 
 Songs are cached (2 GB at most, oldest first out) and playlists for an hour;
 the charts are refreshed in the background. YouTube breaks old yt-dlp
