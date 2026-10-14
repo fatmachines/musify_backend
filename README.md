@@ -53,6 +53,7 @@ approves it. Each device then has its own token (`X-Musify-Sync`).
 | `GET`/`PUT /sync/state/<library\|playback>` | Shared JSON with a revision; a `PUT` with an old `rev` gets `409` and the latest |
 | `GET`/`POST /sync/files` | The synced folder's files: `{add: [{path, sha1, size}], delete: [path]}` |
 | `GET`/`PUT /sync/blobs/<sha1>` | A file's contents, stored once by SHA-1 |
+| `POST /sync/blobs/missing` `{sha1s}` | Which of them still need uploading |
 
 Sync data lives in the `musify_data` volume (`/data`): an SQLite database
 and the files. Songs up to 300 MB each (`MUSIFY_MAX_SONG_MB`).

@@ -332,6 +332,12 @@ def blob_path(sha1):
     return BLOBS / sha1
 
 
+def missing_blobs(body):
+    """Which of these files the server doesn't have yet."""
+    wanted = [str(h).lower() for h in (body.get("sha1s") or [])][:5000]
+    return {"missing": [h for h in wanted if not blob_path(h).exists()]}
+
+
 def save_blob(sha1, stream, length):
     """Stores an upload, if it really is [sha1]."""
     target = blob_path(sha1)
