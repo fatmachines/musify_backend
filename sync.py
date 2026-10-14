@@ -197,11 +197,26 @@ def me(device):
             "WHERE code = ? AND status = 'pending' AND created > ? ORDER BY created",
             (device["code"], time.time() - 24 * 3600),
         ).fetchall()
+    listing = files(device)
+    with _db_lock:
+        row = db().execute(
+            "SELECT sha1s FROM holdings WHERE device = ?", (device["id"],)
+        ).fetchone()
+    mine = set(json.loads(row["sha1s"])) if row else None
+    # Music files waiting: to download (on the server, not held here yet)
+    # and to upload (another device lacks them). A device that hasn't said
+    # what it holds just syncs its files the usual way.
+    incoming = 0 if mine is None else sum(
+        1
+        for f in listing["files"]
+        if not f["deleted"] and f["available"] and f["sha1"] not in mine
+    )
     return {
         "code": device["code"],
         "device": device["id"],
         "devices": [dict(d) | {"me": d["id"] == device["id"]} for d in devices],
         "requests": [dict(r) for r in requests],
+        "files": {"incoming": incoming, "wanted": len(listing["wanted"])},
     }
 
 
