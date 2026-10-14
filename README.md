@@ -1,15 +1,34 @@
 # Musify backend
 
 The server for [Musify](https://github.com/fatmachines/musify_frontend), a
-Spotify-style music player for your own music. YouTube doesn't let phones
-download songs, so the app asks this server, which uses
-[yt-dlp](https://github.com/yt-dlp/yt-dlp) and
+Spotify-style music player for your own music files (iPhone, Android, Mac).
+The app works offline without it; with it, you also get YouTube Music,
+downloads, and sync between your devices.
+
+> **Made entirely by Claude.** This server, the app and their tests were
+> written by Claude (Anthropic's AI) in Claude Code, from a person's
+> requests and bug reports.
+
+<p align="center"><img src="docs/screenshots/youtube_flow.png" alt="Search, an artist and their songs in the app"></p>
+
+YouTube doesn't let phones download songs, so the app asks this server,
+which uses [yt-dlp](https://github.com/yt-dlp/yt-dlp) and
 [ytmusicapi](https://github.com/sigma67/ytmusicapi) to:
 
-- download a YouTube song as M4A (AAC as YouTube has it, not re-encoded),
-  tagged with its title, artist and cover, and
-- read YouTube playlists, such as YouTube Music's Top 100 charts, and
-- search YouTube Music: songs only, and artists with all their songs.
+- **search YouTube Music**: songs only (no videos or mixes), and the artist
+  when the query names one, with all their songs and albums;
+- **read playlists**, such as YouTube Music's Top 100 charts for Home;
+- **download a song as M4A** (AAC as YouTube has it, not re-encoded),
+  tagged with its title, artist and cover, into one of your folders.
+
+And it **syncs your devices**: playlists, tags, Liked Songs and Home pins;
+what's playing, so you can pause on one device and carry on from another,
+or control the one that's playing from the one in your hand; and the music
+files in a folder, mirrored in the same subfolders. Your library is never
+stored here: only a song another device lacks passes through, and it's
+deleted once every device has it.
+
+<p align="center"><img src="docs/screenshots/sync_flow.png" alt="The Sync screen and another device playing"></p>
 
 Everyone runs their own server: it's small (one Python file in Docker) and
 each one has its own key.
@@ -137,7 +156,7 @@ take a few seconds.
 
 ### 4. Connect the app
 
-In Musify: **Your Library → ⋮ → Musify server**, then enter
+In Musify: **Settings → Musify server**, then enter
 `https://musify.example.com` and the key. The app checks them before saving.
 Or build them in: `flutter run --dart-define=MUSIFY_SERVER=https://musify.example.com --dart-define=MUSIFY_KEY=<key>`.
 
