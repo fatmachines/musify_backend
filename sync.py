@@ -34,7 +34,9 @@ MAX_BLOB = int(os.environ.get("MUSIFY_MAX_SONG_MB", "300")) * 1024 * 1024
 
 # No 0/O, 1/I/L: read out and typed by people.
 _ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
-KINDS = {"library", "playback"}
+# command: one device asking another to play, pause, skip or seek (remote
+# control while that one plays).
+KINDS = {"library", "playback", "command"}
 
 _db_lock = threading.Lock()
 _db = None

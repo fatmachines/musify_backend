@@ -50,7 +50,7 @@ approves it. Each device then has its own token (`X-Musify-Sync`).
 | `GET /sync/me` | The group: code, devices, requests waiting, and music files waiting for this device (`files.incoming` to download, `files.wanted` to upload) |
 | `POST /sync/requests/<id>` `{approve}` | Let a device in, or not |
 | `DELETE /sync/devices/<id>` | Take a device out (itself, to leave) |
-| `GET`/`PUT /sync/state/<library\|playback>` | Shared JSON with a revision; a `PUT` with an old `rev` gets `409` and the latest |
+| `GET`/`PUT /sync/state/<library\|playback\|command>` | Shared JSON with a revision; a `PUT` with an old `rev` gets `409` and the latest. `command` is one device asking the one playing to play, pause, skip or seek |
 | `GET`/`POST /sync/files` | The synced folder's files: `{add: [{path, sha1, size}], delete: [path]}`; a `GET` also says which are `available` to download and which this device should upload (`wanted`) |
 | `POST /sync/have` `{sha1s}` | The songs this device holds: songs every device has are never uploaded |
 | `GET`/`PUT /sync/blobs/<sha1>` | A file's contents, stored once by SHA-1 |
