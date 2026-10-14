@@ -3,11 +3,13 @@
 The server for [Musify](https://github.com/fatmachines/musify_frontend), a
 Spotify-style music player for your own music. YouTube doesn't let phones
 download songs, so the app asks this server, which uses
-[yt-dlp](https://github.com/yt-dlp/yt-dlp) to:
+[yt-dlp](https://github.com/yt-dlp/yt-dlp) and
+[ytmusicapi](https://github.com/sigma67/ytmusicapi) to:
 
 - download a YouTube song as M4A (AAC as YouTube has it, not re-encoded),
   tagged with its title, artist and cover, and
-- read YouTube playlists, such as YouTube Music's Top 100 charts.
+- read YouTube playlists, such as YouTube Music's Top 100 charts, and
+- search YouTube Music: songs only, and artists with all their songs.
 
 Everyone runs their own server: it's small (one Python file in Docker) and
 each one has its own key.
@@ -22,13 +24,17 @@ Every request needs the key: an `X-Musify-Key: <key>` header (or `?key=`).
 | `GET /audio/<video id>.m4a` | The song as tagged M4A |
 | `GET /charts` | `{"charts": [playlist, ...]}`: Top 100 Global, United States, United Kingdom, Canada, Australia, India |
 | `GET /playlist?id=<playlist id>` | Any public playlist |
+| `GET /search?q=<query>` | `{"artist": artist or null, "songs": [track, ...]}`: YouTube Music's songs only (no videos or mixes), and the artist when the query names one |
+| `GET /artist?id=<channel id>` | The artist with `"tracks"`: all their songs |
 
-A playlist is `{"id", "title", "tracks": [{"id", "title", "channel",
-"duration", "thumbnail"}]}`, `duration` in seconds.
+A playlist is `{"id", "title", "tracks": [track, ...]}`. A track is `{"id",
+"title", "channel", "duration", "thumbnail"}` (duration in seconds), plus
+`"album"` and `"artistId"` from YouTube Music. An artist is `{"id", "name",
+"thumbnail"}`.
 
 Songs are cached (2 GB at most, oldest first out) and playlists for an hour;
 the charts are refreshed in the background. YouTube breaks old yt-dlp
-versions, so the server installs the newest yt-dlp every time it starts and
+versions, so the server installs the newest yt-dlp and ytmusicapi every time it starts and
 restarts itself once a day when idle.
 
 ## Deploy

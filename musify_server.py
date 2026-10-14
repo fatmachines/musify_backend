@@ -12,11 +12,16 @@ Every request needs the key from MUSIFY_KEY, as an X-Musify-Key header or
   GET /charts                     -> {"charts": [playlist, ...]}: Global,
                                      US, UK, Canada, Australia, India
   GET /playlist?id=<playlist id>  -> playlist
+  GET /search?q=<query>           -> {"artist": artist or null, "songs":
+                                     [track, ...]}: YouTube Music songs only,
+                                     and the artist if the query names one
+  GET /artist?id=<channel id>     -> artist with "tracks": all their songs
   GET /audio/<video id>.m4a       -> the song: AAC as YouTube has it, not
                                      re-encoded, with title, artist and cover
 
-A playlist is {"id", "title", "tracks": [{"id", "title", "channel",
-"duration" (seconds), "thumbnail"}]}.
+A playlist is {"id", "title", "tracks": [track, ...]}; a track is {"id",
+"title", "channel", "duration" (seconds), "thumbnail"}, plus "album" and
+"artistId" from YouTube Music. An artist is {"id", "name", "thumbnail"}.
 """
 
 import hmac
@@ -33,6 +38,7 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
 import yt_dlp
+from ytmusicapi import YTMusic
 
 KEY = os.environ["MUSIFY_KEY"]
 HOST = os.environ.get("MUSIFY_HOST", "127.0.0.1")
@@ -127,6 +133,96 @@ def keep_charts_warm():
         except Exception as e:  # noqa: BLE001 - try again next time
             log("charts refresh failed:", repr(e))
         time.sleep(PLAYLIST_TTL - 10 * 60)
+
+
+# YouTube Music -------------------------------------------------------------
+
+
+def _big(thumbnails, size=544):
+    """The largest thumbnail, asked for at [size] (Google's image URLs take
+    the size in the URL)."""
+    if not thumbnails:
+        return None
+    url = thumbnails[-1].get("url")
+    return re.sub(r"=w\d+-h\d+", f"=w{size}-h{size}", url) if url else None
+
+
+def _music_track(item):
+    artists = [a for a in item.get("artists") or [] if a.get("name")]
+    album = item.get("album") or {}
+    return {
+        "id": item["videoId"],
+        "title": item.get("title") or "",
+        "channel": ", ".join(a["name"] for a in artists) or None,
+        "artistId": next((a["id"] for a in artists if a.get("id")), None),
+        "album": album.get("name"),
+        "duration": item.get("duration_seconds"),
+        "thumbnail": _big(item.get("thumbnails")),
+    }
+
+
+def _plain(text):
+    return re.sub(r"[^a-z0-9]", "", text.lower())
+
+
+def search(query):
+    """YouTube Music's songs for [query] (no videos, mixes or podcasts), and
+    the artist, when the query is (nearly) their name."""
+    music = YTMusic()
+    with ThreadPoolExecutor(2) as pool:
+        songs = pool.submit(music.search, query, filter="songs", limit=40)
+        artists = pool.submit(music.search, query, filter="artists", limit=3)
+    tracks = [_music_track(s) for s in songs.result() if s.get("videoId")]
+    # Their name, and they sing the top songs: "shape of you" shouldn't
+    # find a channel that happens to be called that.
+    singers = {t["artistId"] for t in tracks[:5] if t["artistId"]}
+    artist = None
+    wanted = _plain(query)
+    for found in artists.result():
+        name = found.get("artist") or ""
+        if found.get("browseId") in singers and wanted and _plain(name) and (
+            wanted == _plain(name)
+            or (len(wanted) >= 4 and _plain(name).startswith(wanted))
+        ):
+            artist = {
+                "id": found["browseId"],
+                "name": name,
+                "thumbnail": _big(found.get("thumbnails")),
+            }
+            break
+    return {"artist": artist, "songs": tracks}
+
+
+_artists = {}
+_artists_lock = threading.Lock()
+
+
+def artist(artist_id):
+    """The artist with all their songs (their "Songs" list on YouTube
+    Music), fetched at most once an hour."""
+    with _artists_lock:
+        cached = _artists.get(artist_id)
+    if cached and time.time() - cached[0] < PLAYLIST_TTL:
+        return cached[1]
+    music = YTMusic()
+    info = music.get_artist(artist_id)
+    songs = info.get("songs") or {}
+    items = songs.get("results") or []
+    if songs.get("browseId"):
+        try:
+            items = music.get_playlist(songs["browseId"], limit=None)["tracks"]
+        except Exception as e:  # noqa: BLE001 - the top songs will do
+            log("artist songs failed:", repr(e))
+    result = {
+        "id": artist_id,
+        "name": info.get("name") or "",
+        "thumbnail": _big(info.get("thumbnails")),
+        "tracks": [_music_track(t) for t in items if t.get("videoId")],
+    }
+    with _artists_lock:
+        _artists[artist_id] = (time.time(), result)
+    log("artist", artist_id, len(result["tracks"]), "songs")
+    return result
 
 
 # Songs ----------------------------------------------------------------------
@@ -232,6 +328,16 @@ class Handler(BaseHTTPRequestHandler):
                 if not PLAYLIST_ID.match(playlist_id):
                     return self._send_json(400, {"error": "bad playlist id"})
                 return self._send_json(200, playlist(playlist_id))
+            if url.path == "/search":
+                query_text = query.get("q", [""])[0].strip()
+                if not query_text or len(query_text) > 200:
+                    return self._send_json(400, {"error": "bad query"})
+                return self._send_json(200, search(query_text))
+            if url.path == "/artist":
+                artist_id = query.get("id", [""])[0]
+                if not PLAYLIST_ID.match(artist_id):
+                    return self._send_json(400, {"error": "bad artist id"})
+                return self._send_json(200, artist(artist_id))
             match = re.fullmatch(r"/audio/([^/]+)\.m4a", url.path)
             if match:
                 if not VIDEO_ID.match(match[1]):
