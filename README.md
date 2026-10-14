@@ -34,6 +34,29 @@ A playlist is `{"id", "title", "tracks": [track, ...]}`. A track is `{"id",
 "thumbnail"}`; an album is `{"id", "title", "year", "thumbnail"}` (plus
 `"artist"` from `/album`).
 
+### Sync
+
+The app can sync its devices through the server: playlists, tags, Liked
+Songs, pins, what's playing (to carry on from another device), and the
+music files in a folder. A device creates a sync group and shows its code;
+another device asks to join with that code, and a device in the group
+approves it. Each device then has its own token (`X-Musify-Sync`).
+
+| Request | |
+| --- | --- |
+| `POST /sync/create` `{device, name, platform}` | A new group: `{code, token}` |
+| `POST /sync/join` `{code, device, name, platform}` | Ask to join: `{request}` |
+| `GET /sync/join/<request>` | `pending`, `denied`, or `approved` with the `token` (given once) |
+| `GET /sync/me` | The group: code, devices, requests waiting |
+| `POST /sync/requests/<id>` `{approve}` | Let a device in, or not |
+| `DELETE /sync/devices/<id>` | Take a device out (itself, to leave) |
+| `GET`/`PUT /sync/state/<library\|playback>` | Shared JSON with a revision; a `PUT` with an old `rev` gets `409` and the latest |
+| `GET`/`POST /sync/files` | The synced folder's files: `{add: [{path, sha1, size}], delete: [path]}` |
+| `GET`/`PUT /sync/blobs/<sha1>` | A file's contents, stored once by SHA-1 |
+
+Sync data lives in the `musify_data` volume (`/data`): an SQLite database
+and the files. Songs up to 300 MB each (`MUSIFY_MAX_SONG_MB`).
+
 Songs are cached (2 GB at most, oldest first out) and playlists for an hour;
 the charts are refreshed in the background. YouTube breaks old yt-dlp
 versions, so the server installs the newest yt-dlp and ytmusicapi every time it starts and

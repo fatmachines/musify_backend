@@ -7,6 +7,8 @@ services:
     env_file: .env
     volumes:
       - musify_cache:/cache
+      # Sync: devices, shared playlists and the synced music files.
+      - musify_data:/data
     # Only on this machine: put a reverse proxy with HTTPS in front (see
     # README). To share another compose project's network instead, add a
     # docker-compose.override.yml.
@@ -15,3 +17,4 @@ services:
 
 volumes:
   musify_cache:
+  musify_data:

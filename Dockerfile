@@ -9,7 +9,7 @@ RUN apt-get update \
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY requirements.txt musify_server.py entrypoint.sh ./
+COPY requirements.txt musify_server.py sync.py entrypoint.sh ./
 
-ENV MUSIFY_HOST=0.0.0.0 MUSIFY_PORT=8790 MUSIFY_CACHE=/cache
+ENV MUSIFY_HOST=0.0.0.0 MUSIFY_PORT=8790 MUSIFY_CACHE=/cache MUSIFY_DATA=/data
 CMD ["./entrypoint.sh"]

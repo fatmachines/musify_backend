@@ -18,6 +18,7 @@ Every request needs the key from MUSIFY_KEY, as an X-Musify-Key header or
   GET /artist?id=<channel id>     -> artist with "tracks": all their songs,
                                      and "albums"
   GET /album?id=<album id>        -> album with "tracks"
+  /sync/...                       -> sync between devices (see sync.py)
   GET /audio/<video id>.m4a       -> the song: AAC as YouTube has it, not
                                      re-encoded, with title, artist and cover
 
@@ -42,6 +43,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 import yt_dlp
 from ytmusicapi import YTMusic
+
+import sync
 
 KEY = os.environ["MUSIFY_KEY"]
 HOST = os.environ.get("MUSIFY_HOST", "127.0.0.1")
@@ -361,21 +364,101 @@ class Handler(BaseHTTPRequestHandler):
         given = self.headers.get("X-Musify-Key") or query.get("key", [""])[0]
         return hmac.compare_digest(given.encode(), KEY.encode())
 
-    def do_GET(self):
+    def _handle(self, method):
         global _busy
         with _busy_lock:
             _busy += 1
         try:
-            self._get()
+            url = urllib.parse.urlsplit(self.path)
+            query = urllib.parse.parse_qs(url.query)
+            if not self._authorised(query):
+                return self._send_json(401, {"error": "wrong key"})
+            if url.path.startswith("/sync/"):
+                return self._sync(method, url.path)
+            if method != "GET":
+                return self._send_json(405, {"error": "use GET"})
+            return self._get(url, query)
         finally:
             with _busy_lock:
                 _busy -= 1
 
-    def _get(self):
-        url = urllib.parse.urlsplit(self.path)
-        query = urllib.parse.parse_qs(url.query)
-        if not self._authorised(query):
-            return self._send_json(401, {"error": "wrong key"})
+    def do_GET(self):
+        self._handle("GET")
+
+    def do_POST(self):
+        self._handle("POST")
+
+    def do_PUT(self):
+        self._handle("PUT")
+
+    def do_DELETE(self):
+        self._handle("DELETE")
+
+    def _body(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > 20 * 1024 * 1024:
+            raise sync.SyncError(413, "too big")
+        raw = self.rfile.read(length) if length else b"{}"
+        try:
+            return json.loads(raw or b"{}")
+        except ValueError:
+            raise sync.SyncError(400, "bad JSON") from None
+
+    def _sync(self, method, path):
+        """Sync between devices: see sync.py."""
+        try:
+            parts = path.strip("/").split("/")[1:]
+            if method == "POST" and parts == ["create"]:
+                return self._send_json(200, sync.create(self._body()))
+            if method == "POST" and parts == ["join"]:
+                return self._send_json(200, sync.join(self._body()))
+            if method == "GET" and len(parts) == 2 and parts[0] == "join":
+                return self._send_json(200, sync.join_status(parts[1]))
+
+            device = sync.device_for(self.headers.get("X-Musify-Sync"))
+            if method == "GET" and parts == ["me"]:
+                return self._send_json(200, sync.me(device))
+            if method == "POST" and len(parts) == 2 and parts[0] == "requests":
+                approve = bool(self._body().get("approve"))
+                return self._send_json(200, sync.answer(device, parts[1], approve))
+            if method == "DELETE" and len(parts) == 2 and parts[0] == "devices":
+                return self._send_json(200, sync.remove(device, parts[1]))
+            if len(parts) == 2 and parts[0] == "state":
+                if method == "GET":
+                    return self._send_json(200, sync.get_state(device, parts[1]))
+                if method == "PUT":
+                    body = self._body()
+                    return self._send_json(
+                        200, sync.put_state(device, parts[1], body)
+                    )
+            if parts == ["files"]:
+                if method == "GET":
+                    return self._send_json(200, sync.files(device))
+                if method == "POST":
+                    return self._send_json(
+                        200, sync.change_files(device, self._body())
+                    )
+            if len(parts) == 2 and parts[0] == "blobs":
+                blob = sync.blob_path(parts[1])
+                if method == "GET":
+                    if not blob.exists():
+                        return self._send_json(404, {"error": "not uploaded"})
+                    return self._send_file(blob)
+                if method == "PUT":
+                    length = int(self.headers.get("Content-Length") or 0)
+                    return self._send_json(
+                        200, sync.save_blob(parts[1], self.rfile, length)
+                    )
+            return self._send_json(404, {"error": "not found"})
+        except sync.SyncError as e:
+            if e.status == 409:
+                return self._send_json(409, {"error": "changed", "latest": json.loads(e.message)})
+            return self._send_json(e.status, {"error": e.message})
+        except Exception as e:  # noqa: BLE001 - report anything to the app
+            log("sync failed:", repr(e))
+            return self._send_json(500, {"error": str(e)})
+
+    def _get(self, url, query):
         try:
             if url.path == "/health":
                 return self._send_json(
@@ -419,7 +502,10 @@ class Handler(BaseHTTPRequestHandler):
     def _send_file(self, path):
         size = path.stat().st_size
         self.send_response(200)
-        self.send_header("Content-Type", "audio/mp4")
+        self.send_header(
+            "Content-Type",
+            "audio/mp4" if path.suffix == ".m4a" else "application/octet-stream",
+        )
         self.send_header("Content-Length", str(size))
         self.end_headers()
         with path.open("rb") as f:
