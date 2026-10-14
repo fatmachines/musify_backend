@@ -15,13 +15,16 @@ Every request needs the key from MUSIFY_KEY, as an X-Musify-Key header or
   GET /search?q=<query>           -> {"artist": artist or null, "songs":
                                      [track, ...]}: YouTube Music songs only,
                                      and the artist if the query names one
-  GET /artist?id=<channel id>     -> artist with "tracks": all their songs
+  GET /artist?id=<channel id>     -> artist with "tracks": all their songs,
+                                     and "albums"
+  GET /album?id=<album id>        -> album with "tracks"
   GET /audio/<video id>.m4a       -> the song: AAC as YouTube has it, not
                                      re-encoded, with title, artist and cover
 
 A playlist is {"id", "title", "tracks": [track, ...]}; a track is {"id",
 "title", "channel", "duration" (seconds), "thumbnail"}, plus "album" and
-"artistId" from YouTube Music. An artist is {"id", "name", "thumbnail"}.
+"artistId" from YouTube Music. An artist is {"id", "name", "thumbnail"}; an
+album is {"id", "title", "year", "thumbnail"}.
 """
 
 import hmac
@@ -150,6 +153,9 @@ def _big(thumbnails, size=544):
 def _music_track(item):
     artists = [a for a in item.get("artists") or [] if a.get("name")]
     album = item.get("album") or {}
+    # Album tracks name their album as plain text.
+    if isinstance(album, str):
+        album = {"name": album}
     return {
         "id": item["videoId"],
         "title": item.get("title") or "",
@@ -213,15 +219,69 @@ def artist(artist_id):
             items = music.get_playlist(songs["browseId"], limit=None)["tracks"]
         except Exception as e:  # noqa: BLE001 - the top songs will do
             log("artist songs failed:", repr(e))
+    albums = info.get("albums") or {}
+    album_items = albums.get("results") or []
+    if albums.get("browseId"):
+        try:
+            album_items = music.get_artist_albums(
+                albums["browseId"], albums.get("params")
+            )
+        except Exception as e:  # noqa: BLE001 - the first few will do
+            log("artist albums failed:", repr(e))
     result = {
         "id": artist_id,
         "name": info.get("name") or "",
         "thumbnail": _big(info.get("thumbnails")),
         "tracks": [_music_track(t) for t in items if t.get("videoId")],
+        "albums": [
+            {
+                "id": a["browseId"],
+                "title": a.get("title") or "",
+                "year": a.get("year"),
+                "thumbnail": _big(a.get("thumbnails")),
+            }
+            for a in album_items
+            if a.get("browseId")
+        ],
     }
     with _artists_lock:
         _artists[artist_id] = (time.time(), result)
     log("artist", artist_id, len(result["tracks"]), "songs")
+    return result
+
+
+_albums = {}
+
+
+def album(album_id):
+    """The album's songs (those that can be played), cached for an hour."""
+    with _artists_lock:
+        cached = _albums.get(album_id)
+    if cached and time.time() - cached[0] < PLAYLIST_TTL:
+        return cached[1]
+    info = YTMusic().get_album(album_id)
+    cover = _big(info.get("thumbnails"))
+    tracks = []
+    for item in info.get("tracks") or []:
+        if not item.get("videoId"):
+            continue
+        track = _music_track(item)
+        track["album"] = track["album"] or info.get("title")
+        # Album tracks have no pictures of their own: the album's.
+        track["thumbnail"] = track["thumbnail"] or cover
+        tracks.append(track)
+    artists = info.get("artists") or []
+    result = {
+        "id": album_id,
+        "title": info.get("title") or "",
+        "year": info.get("year"),
+        "artist": ", ".join(a["name"] for a in artists if a.get("name")) or None,
+        "thumbnail": cover,
+        "tracks": tracks,
+    }
+    with _artists_lock:
+        _albums[album_id] = (time.time(), result)
+    log("album", album_id, len(tracks), "songs")
     return result
 
 
@@ -338,6 +398,11 @@ class Handler(BaseHTTPRequestHandler):
                 if not PLAYLIST_ID.match(artist_id):
                     return self._send_json(400, {"error": "bad artist id"})
                 return self._send_json(200, artist(artist_id))
+            if url.path == "/album":
+                album_id = query.get("id", [""])[0]
+                if not PLAYLIST_ID.match(album_id):
+                    return self._send_json(400, {"error": "bad album id"})
+                return self._send_json(200, album(album_id))
             match = re.fullmatch(r"/audio/([^/]+)\.m4a", url.path)
             if match:
                 if not VIDEO_ID.match(match[1]):

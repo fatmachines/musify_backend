@@ -25,12 +25,14 @@ Every request needs the key: an `X-Musify-Key: <key>` header (or `?key=`).
 | `GET /charts` | `{"charts": [playlist, ...]}`: Top 100 Global, United States, United Kingdom, Canada, Australia, India |
 | `GET /playlist?id=<playlist id>` | Any public playlist |
 | `GET /search?q=<query>` | `{"artist": artist or null, "songs": [track, ...]}`: YouTube Music's songs only (no videos or mixes), and the artist when the query names one |
-| `GET /artist?id=<channel id>` | The artist with `"tracks"`: all their songs |
+| `GET /artist?id=<channel id>` | The artist with `"tracks"` (all their songs) and `"albums"` |
+| `GET /album?id=<album id>` | The album with `"tracks"` |
 
 A playlist is `{"id", "title", "tracks": [track, ...]}`. A track is `{"id",
 "title", "channel", "duration", "thumbnail"}` (duration in seconds), plus
 `"album"` and `"artistId"` from YouTube Music. An artist is `{"id", "name",
-"thumbnail"}`.
+"thumbnail"}`; an album is `{"id", "title", "year", "thumbnail"}` (plus
+`"artist"` from `/album`).
 
 Songs are cached (2 GB at most, oldest first out) and playlists for an hour;
 the charts are refreshed in the background. YouTube breaks old yt-dlp
