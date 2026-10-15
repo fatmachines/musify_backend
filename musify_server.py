@@ -293,6 +293,9 @@ def album(album_id):
 
 _song_locks = {}
 _song_locks_lock = threading.Lock()
+# YouTube fetches at once: more wait their turn, so a burst of requests
+# (an app asking for a whole playlist) can't swamp the server.
+_fetch_slots = threading.BoundedSemaphore(2)
 
 
 def song_file(video_id):
@@ -318,9 +321,10 @@ def song_file(video_id):
                 {"key": "EmbedThumbnail"},
             ],
         }
-        started = time.time()
-        with yt_dlp.YoutubeDL(options) as ydl:
-            ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
+        with _fetch_slots:
+            started = time.time()
+            with yt_dlp.YoutubeDL(options) as ydl:
+                ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
         done = work / "song.m4a"
         if not done.exists():
             raise RuntimeError("yt-dlp made no m4a")
