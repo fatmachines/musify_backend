@@ -612,6 +612,8 @@ class Handler(BaseHTTPRequestHandler):
             device = sync.device_for(self.headers.get("X-Musify-Sync"))
             if method == "GET" and parts == ["me"]:
                 return self._send_json(200, sync.me(device))
+            if method == "GET" and parts == ["revs"]:
+                return self._send_json(200, sync.revs(device))
             if method == "POST" and len(parts) == 2 and parts[0] == "requests":
                 approve = bool(self._body().get("approve"))
                 return self._send_json(200, sync.answer(device, parts[1], approve))

@@ -68,6 +68,7 @@ approves it. Each device then has its own token (`X-Musify-Sync`).
 | `POST /sync/join` `{code, device, name, platform}` | Ask to join: `{request}` |
 | `GET /sync/join/<request>` | `pending`, `denied`, or `approved` with the `token` (given once) |
 | `GET /sync/me` | The group: code, devices, requests waiting, and music files waiting for this device (`files.incoming` to download, `files.wanted` to upload) |
+| `GET /sync/revs` | The revision of each shared state and the group's device ids: cheap enough to poll every few seconds, so a device fetches only what changed |
 | `POST /sync/requests/<id>` `{approve}` | Let a device in, or not |
 | `DELETE /sync/devices/<id>` | Take a device out (itself, to leave) |
 | `GET`/`PUT /sync/state/<library\|playback\|command>` | Shared JSON with a revision; a `PUT` with an old `rev` gets `409` and the latest. `command` is one device asking the one playing to play, pause, skip or seek |

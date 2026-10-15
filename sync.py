@@ -277,6 +277,23 @@ def get_state(device, kind):
     }
 
 
+def revs(device):
+    """How far each shared state has got, and who's in the group: polled
+    every few seconds, so a device fetches only what changed."""
+    with _db_lock:
+        conn = db()
+        rows = conn.execute(
+            "SELECT kind, rev FROM state WHERE code = ?", (device["code"],)
+        ).fetchall()
+        devices = conn.execute(
+            "SELECT id FROM devices WHERE code = ?", (device["code"],)
+        ).fetchall()
+    return {
+        "revs": {r["kind"]: r["rev"] for r in rows},
+        "devices": [d["id"] for d in devices],
+    }
+
+
 def put_state(device, kind, body):
     """Saves it if [rev] is still the latest; else 409 with the latest."""
     if kind not in KINDS:
