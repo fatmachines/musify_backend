@@ -107,12 +107,19 @@ def playlist(playlist_id, title=None, fresh=False):
     for entry in info.get("entries") or []:
         if not entry or not entry.get("id"):
             continue
+        # Gone from YouTube, but still listed.
+        if entry.get("title") in ("[Private video]", "[Deleted video]"):
+            continue
         thumbnails = entry.get("thumbnails") or []
+        channel = entry.get("channel") or entry.get("uploader")
+        if channel:
+            # YouTube Music's auto-made channels: "Queen - Topic".
+            channel = re.sub(r" - Topic$", "", channel)
         tracks.append(
             {
                 "id": entry["id"],
                 "title": entry.get("title") or "",
-                "channel": entry.get("channel") or entry.get("uploader"),
+                "channel": channel,
                 "duration": entry.get("duration"),
                 "thumbnail": f"https://i.ytimg.com/vi/{entry['id']}/hqdefault.jpg"
                 if not thumbnails
