@@ -19,7 +19,8 @@ Every request needs the key from MUSIFY_KEY, as an X-Musify-Key header or
                                      and "albums"
   GET /album?id=<album id>        -> album with "tracks"
   /sync/...                       -> sync between devices (see sync.py)
-  GET /audio/<video id>.m4a       -> the song: AAC as YouTube has it, not
+  GET /audio/<video id>.m4a       -> the song (byte ranges too, for
+                                     streaming): AAC as YouTube has it, not
                                      re-encoded, with title, artist and cover
 
 A playlist is {"id", "title", "tracks": [track, ...]}; a track is {"id",
@@ -504,16 +505,45 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(500, {"error": str(e)})
 
     def _send_file(self, path):
+        """The file, or the byte range asked for: the iPhone's and Mac's
+        player streams a song only from a server that answers ranges."""
         size = path.stat().st_size
-        self.send_response(200)
+        start, end = 0, size - 1
+        ranged = False
+        match = re.fullmatch(r"bytes=(\d*)-(\d*)", self.headers.get("Range", "").strip())
+        if match and (match[1] or match[2]):
+            if match[1]:
+                start = int(match[1])
+                if match[2]:
+                    end = min(int(match[2]), size - 1)
+            else:  # the last N bytes
+                start = max(0, size - int(match[2]))
+            if start > end:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            ranged = True
+        self.send_response(206 if ranged else 200)
         self.send_header(
             "Content-Type",
             "audio/mp4" if path.suffix == ".m4a" else "application/octet-stream",
         )
-        self.send_header("Content-Length", str(size))
+        self.send_header("Accept-Ranges", "bytes")
+        if ranged:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.send_header("Content-Length", str(end - start + 1))
         self.end_headers()
         with path.open("rb") as f:
-            shutil.copyfileobj(f, self.wfile, 64 * 1024)
+            f.seek(start)
+            left = end - start + 1
+            while left > 0:
+                chunk = f.read(min(64 * 1024, left))
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                left -= len(chunk)
 
 
 _busy = 0
