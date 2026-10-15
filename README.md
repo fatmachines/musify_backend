@@ -43,6 +43,7 @@ Every request needs the key: an `X-Musify-Key: <key>` header (or `?key=`).
 | `GET /audio/<video id>.m4a` | The song as tagged M4A |
 | `GET /charts` | `{"charts": [playlist, ...]}`: Top 100 Global, United States, United Kingdom, Canada, Australia, India |
 | `GET /playlist?id=<playlist id>` | Any public playlist |
+| `GET /spotify?id=<playlist id>` | A whole public Spotify playlist (no Spotify account needed), each song found on YouTube Music, plus `"missing"`: the songs it couldn't find. Takes a while for long playlists |
 | `GET /search?q=<query>` | `{"artist": artist or null, "songs": [track, ...]}`: YouTube Music's songs only (no videos or mixes), and the artist when the query names one |
 | `GET /artist?id=<channel id>` | The artist with `"tracks"` (all their songs) and `"albums"` |
 | `GET /album?id=<album id>` | The album with `"tracks"` |

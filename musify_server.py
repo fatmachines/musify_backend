@@ -12,6 +12,8 @@ Every request needs the key from MUSIFY_KEY, as an X-Musify-Key header or
   GET /charts                     -> {"charts": [playlist, ...]}: Global,
                                      US, UK, Canada, Australia, India
   GET /playlist?id=<playlist id>  -> playlist
+  GET /spotify?id=<playlist id>   -> a public Spotify playlist, its songs
+                                     found on YouTube Music (+ "missing")
   GET /search?q=<query>           -> {"artist": artist or null, "songs":
                                      [track, ...]}: YouTube Music songs only,
                                      and the artist if the query names one
@@ -37,6 +39,7 @@ import shutil
 import threading
 import time
 import urllib.parse
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -296,6 +299,185 @@ def album(album_id):
     return result
 
 
+# Spotify ----------------------------------------------------------------------
+
+SPOTIFY_ID = re.compile(r"^[A-Za-z0-9]{22}$")
+_BROWSER = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
+
+_spotify = {}
+_spotify_lock = threading.Lock()
+
+
+def _fetch_text(url):
+    request = urllib.request.Request(url, headers=_BROWSER)
+    with urllib.request.urlopen(request, timeout=20) as response:
+        return response.read().decode("utf-8", "replace")
+
+
+# The query Spotify's web player reads a playlist with. Spotify can retire
+# it; then only playlists of up to 100 songs import (from the embed page).
+SPOTIFY_PLAYLIST_QUERY = (
+    "bb67e0af06e8d6f52b531f97468ee4acd44cd0f82b988e15c2ea47b1148efc77"
+)
+
+
+def _spotify_page(playlist_id, token, offset):
+    """[offset] onwards of the playlist, up to 100 songs, and how many it
+    has, through Spotify's web player API."""
+    query = urllib.parse.urlencode(
+        {
+            "operationName": "fetchPlaylist",
+            "variables": json.dumps(
+                {
+                    "uri": f"spotify:playlist:{playlist_id}",
+                    "offset": offset,
+                    "limit": 100,
+                    "enableWatchFeedEntrypoint": False,
+                }
+            ),
+            "extensions": json.dumps(
+                {"persistedQuery": {"version": 1, "sha256Hash": SPOTIFY_PLAYLIST_QUERY}}
+            ),
+        }
+    )
+    request = urllib.request.Request(
+        f"https://api-partner.spotify.com/pathfinder/v1/query?{query}",
+        headers=_BROWSER | {"Authorization": f"Bearer {token}"},
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        content = json.load(response)["data"]["playlistV2"]["content"]
+    songs = []
+    for item in content.get("items") or []:
+        data = (item.get("itemV2") or {}).get("data") or {}
+        if not data.get("name"):
+            continue  # a podcast episode, or gone from Spotify
+        artists = ((data.get("artists") or {}).get("items")) or []
+        songs.append(
+            {
+                "title": data["name"],
+                "artists": ", ".join(
+                    a["profile"]["name"] for a in artists if a.get("profile")
+                ),
+                "duration": ((data.get("trackDuration") or {}).get("totalMilliseconds") or 0)
+                / 1000,
+            }
+        )
+    return songs, content.get("totalCount") or 0
+
+
+def _spotify_songs(playlist_id):
+    """A public Spotify playlist's name and all its songs (title, artists,
+    length), without a Spotify account: the embed page gives the name, the
+    first 100 songs and a token for the web player's API, which pages
+    through the rest. Fails rather than give part of a playlist."""
+    page = _fetch_text(f"https://open.spotify.com/embed/playlist/{playlist_id}")
+    found = re.search(
+        r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
+        page,
+        re.S,
+    )
+    if not found:
+        raise RuntimeError("Spotify didn't show that playlist (is it public?)")
+    state = json.loads(found[1])["props"]["pageProps"]["state"]
+    entity = state["data"]["entity"]
+    name = entity.get("name") or "Spotify playlist"
+    first = [
+        {
+            "title": t["title"],
+            "artists": t.get("subtitle") or "",
+            "duration": (t.get("duration") or 0) / 1000,
+        }
+        for t in entity.get("trackList") or []
+        if t.get("title")
+    ]
+    token = ((state.get("settings") or {}).get("session") or {}).get("accessToken")
+    try:
+        songs, total = _spotify_page(playlist_id, token, 0)
+        while len(songs) < total:
+            more, _ = _spotify_page(playlist_id, token, len(songs))
+            if not more:
+                break
+            songs += more
+        if songs:
+            return name, songs
+    except Exception as e:  # noqa: BLE001 - the embed page may do
+        log("spotify: web player API failed:", repr(e))
+    # The embed page lists up to 100: enough only for a playlist that size.
+    if len(first) < 100:
+        return name, first
+    raise RuntimeError(
+        "Couldn't read the whole playlist from Spotify, so nothing was imported"
+    )
+
+
+def _on_youtube(song):
+    """The song on YouTube Music: of the first few results for its title
+    and artists, the one whose length, title and artist agree best; None if
+    none does."""
+    results = YTMusic().search(
+        f"{song['title']} {song['artists']}", filter="songs", limit=5
+    )
+    title = _plain(re.sub(r"\s*[(\[].*?[)\]]", "", song["title"]).split(" - ")[0])
+    artists = {_plain(a) for a in song["artists"].split(",") if _plain(a)}
+    best, best_score = None, 0.5
+    for rank, item in enumerate(r for r in results if r.get("videoId")):
+        track = _music_track(item)
+        score = -0.5 * rank  # YouTube Music's own order counts a little
+        if track["duration"] and song["duration"]:
+            off = abs(track["duration"] - song["duration"])
+            score += 3 if off <= 3 else 2 if off <= 8 else 0 if off <= 20 else -3
+        if title and title in _plain(track["title"]):
+            score += 2
+        channel = _plain(track["channel"] or "")
+        if any(a in channel or channel in a for a in artists if channel):
+            score += 2
+        if score > best_score:
+            best, best_score = track, score
+    return best
+
+
+def spotify_playlist(playlist_id):
+    """A public Spotify playlist with each song found on YouTube Music, as a
+    playlist like YouTube's, plus the songs that weren't found ("missing").
+    Kept for an hour."""
+    with _spotify_lock:
+        cached = _spotify.get(playlist_id)
+    if cached and time.time() - cached[0] < PLAYLIST_TTL:
+        return cached[1]
+    started = time.time()
+    name, songs = _spotify_songs(playlist_id)
+
+    def find(song):
+        try:
+            return _on_youtube(song)
+        except Exception as e:  # noqa: BLE001 - counts as not found
+            log("spotify: search failed:", repr(e))
+            return None
+
+    with ThreadPoolExecutor(8) as pool:
+        found = list(pool.map(find, songs))
+    tracks, missing, seen = [], [], set()
+    for song, track in zip(songs, found):
+        if track is None:
+            missing.append(f"{song['title']} – {song['artists']}")
+        elif track["id"] not in seen:
+            seen.add(track["id"])
+            tracks.append(track)
+    result = {
+        "id": f"spotify-{playlist_id}",
+        "title": name,
+        "tracks": tracks,
+        "missing": missing,
+    }
+    with _spotify_lock:
+        _spotify[playlist_id] = (time.time(), result)
+    log(
+        "spotify", playlist_id, f"{len(tracks)}/{len(songs)} found",
+        f"in {time.time() - started:.1f}s",
+    )
+    return result
+
+
 # Songs ----------------------------------------------------------------------
 
 _song_locks = {}
@@ -487,6 +669,11 @@ class Handler(BaseHTTPRequestHandler):
                 if not PLAYLIST_ID.match(playlist_id):
                     return self._send_json(400, {"error": "bad playlist id"})
                 return self._send_json(200, playlist(playlist_id))
+            if url.path == "/spotify":
+                playlist_id = query.get("id", [""])[0]
+                if not SPOTIFY_ID.match(playlist_id):
+                    return self._send_json(400, {"error": "bad Spotify playlist id"})
+                return self._send_json(200, spotify_playlist(playlist_id))
             if url.path == "/search":
                 query_text = query.get("q", [""])[0].strip()
                 if not query_text or len(query_text) > 200:
