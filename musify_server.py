@@ -322,8 +322,9 @@ SPOTIFY_PLAYLIST_QUERY = (
 
 
 def _spotify_page(playlist_id, token, offset):
-    """[offset] onwards of the playlist, up to 100 songs, and how many it
-    has, through Spotify's web player API."""
+    """[offset] onwards of the playlist, up to 100 items, through Spotify's
+    web player API: its songs, how many items the playlist has, how many
+    items this page had, and how many of them weren't songs."""
     query = urllib.parse.urlencode(
         {
             "operationName": "fetchPlaylist",
@@ -347,7 +348,8 @@ def _spotify_page(playlist_id, token, offset):
     with urllib.request.urlopen(request, timeout=30) as response:
         content = json.load(response)["data"]["playlistV2"]["content"]
     songs = []
-    for item in content.get("items") or []:
+    items = content.get("items") or []
+    for item in items:
         data = (item.get("itemV2") or {}).get("data") or {}
         if not data.get("name"):
             continue  # a podcast episode, or gone from Spotify
@@ -362,14 +364,15 @@ def _spotify_page(playlist_id, token, offset):
                 / 1000,
             }
         )
-    return songs, content.get("totalCount") or 0
+    return songs, content.get("totalCount") or 0, len(items), len(items) - len(songs)
 
 
 def _spotify_songs(playlist_id):
     """A public Spotify playlist's name and all its songs (title, artists,
     length), without a Spotify account: the embed page gives the name, the
     first 100 songs and a token for the web player's API, which pages
-    through the rest. Fails rather than give part of a playlist."""
+    through the rest. Fails rather than give part of a playlist. Also how
+    many of its items aren't songs (podcast episodes, gone from Spotify)."""
     page = _fetch_text(f"https://open.spotify.com/embed/playlist/{playlist_id}")
     found = re.search(
         r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
@@ -392,19 +395,21 @@ def _spotify_songs(playlist_id):
     ]
     token = ((state.get("settings") or {}).get("session") or {}).get("accessToken")
     try:
-        songs, total = _spotify_page(playlist_id, token, 0)
-        while len(songs) < total:
-            more, _ = _spotify_page(playlist_id, token, len(songs))
-            if not more:
+        songs, total, read, skipped = _spotify_page(playlist_id, token, 0)
+        while read < total:
+            more, _, items, gone = _spotify_page(playlist_id, token, read)
+            if not items:
                 break
             songs += more
+            read += items
+            skipped += gone
         if songs:
-            return name, songs
+            return name, songs, skipped
     except Exception as e:  # noqa: BLE001 - the embed page may do
         log("spotify: web player API failed:", repr(e))
     # The embed page lists up to 100: enough only for a playlist that size.
     if len(first) < 100:
-        return name, first
+        return name, first, 0
     raise RuntimeError(
         "Couldn't read the whole playlist from Spotify, so nothing was imported"
     )
@@ -445,7 +450,7 @@ def spotify_playlist(playlist_id):
     if cached and time.time() - cached[0] < PLAYLIST_TTL:
         return cached[1]
     started = time.time()
-    name, songs = _spotify_songs(playlist_id)
+    name, songs, skipped = _spotify_songs(playlist_id)
 
     def find(song):
         try:
@@ -456,18 +461,24 @@ def spotify_playlist(playlist_id):
 
     with ThreadPoolExecutor(8) as pool:
         found = list(pool.map(find, songs))
-    tracks, missing, seen = [], [], set()
+    tracks, missing, seen, repeats = [], [], set(), 0
     for song, track in zip(songs, found):
         if track is None:
             missing.append(f"{song['title']} – {song['artists']}")
         elif track["id"] not in seen:
             seen.add(track["id"])
             tracks.append(track)
+        else:
+            repeats += 1  # in it twice, or two versions found as one song
     result = {
         "id": f"spotify-{playlist_id}",
         "title": name,
         "tracks": tracks,
         "missing": missing,
+        # Songs found more than once, and items that weren't songs: so the
+        # app can account for every item Spotify shows.
+        "repeats": repeats,
+        "skipped": skipped,
     }
     with _spotify_lock:
         _spotify[playlist_id] = (time.time(), result)
@@ -697,7 +708,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(404, {"error": "not found"})
         except yt_dlp.utils.DownloadError as e:
             log("yt-dlp:", e)
-            return self._send_json(502, {"error": str(e).replace("ERROR: ", "")})
+            message = str(e).replace("ERROR: ", "")
+            # Not 502: proxies in front (Cloudflare) swap a 5xx answer for
+            # their own page, and the app only sees "502".
+            if re.search(r"does not exist|unavailable|private", message, re.I):
+                return self._send_json(
+                    404,
+                    {"error": "there's no public playlist or song at that link"},
+                )
+            return self._send_json(422, {"error": message})
         except Exception as e:  # noqa: BLE001 - report anything to the app
             log("failed:", repr(e))
             return self._send_json(500, {"error": str(e)})
