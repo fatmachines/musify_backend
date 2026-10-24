@@ -25,6 +25,7 @@ import secrets
 import sqlite3
 import threading
 import time
+import urllib.parse
 from pathlib import Path
 
 DATA = Path(os.environ.get("MUSIFY_DATA", "/data"))
@@ -169,8 +170,9 @@ def join_status(request):
     return result
 
 
-def device_for(token):
-    """The device (row) a token belongs to, seen now."""
+def device_for(token, name=None):
+    """The device (row) a token belongs to, seen now. [name], if given, is
+    what the device calls itself now (URL-encoded), kept if it changed."""
     if not token:
         raise SyncError(401, "Not in a sync group")
     with _db_lock:
@@ -181,6 +183,9 @@ def device_for(token):
         if row is None:
             raise SyncError(401, "This device was removed from sync")
         conn.execute("UPDATE devices SET seen = ? WHERE id = ?", (time.time(), row["id"]))
+        name = urllib.parse.unquote(name or "").strip()[:60]
+        if name and name != row["name"]:
+            conn.execute("UPDATE devices SET name = ? WHERE id = ?", (name, row["id"]))
         conn.commit()
     return row
 

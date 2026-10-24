@@ -620,7 +620,10 @@ class Handler(BaseHTTPRequestHandler):
             if method == "GET" and len(parts) == 2 and parts[0] == "join":
                 return self._send_json(200, sync.join_status(parts[1]))
 
-            device = sync.device_for(self.headers.get("X-Musify-Sync"))
+            device = sync.device_for(
+                self.headers.get("X-Musify-Sync"),
+                self.headers.get("X-Musify-Device-Name"),
+            )
             if method == "GET" and parts == ["me"]:
                 return self._send_json(200, sync.me(device))
             if method == "POST" and len(parts) == 2 and parts[0] == "requests":
